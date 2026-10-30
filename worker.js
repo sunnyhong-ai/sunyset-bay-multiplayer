@@ -4,11 +4,11 @@ export class WorldRoom {
     if(request.headers.get('Upgrade')!=='websocket')return new Response('WebSocket required',{status:426});
     const u=new URL(request.url);const name=(u.searchParams.get('name')||'Guest').slice(0,22);
     const pair=new WebSocketPair();const client=pair[0],server=pair[1];server.accept();
-    const id=crypto.randomUUID().slice(0,12);const players=[...this.clients].map(([id,c])=>({id,name:c.name,x:c.x,z:c.z,rot:c.rot,ride:c.ride||'',seat:c.seat||0,gesture:c.gesture||''}));
-    const item={ws:server,name,x:0,z:13,rot:0,ride:'',seat:0,gesture:''};this.clients.set(id,item);
+    const id=crypto.randomUUID().slice(0,12);const players=[...this.clients].map(([id,c])=>({id,name:c.name,x:c.x,z:c.z,rot:c.rot,ride:c.ride||'',seat:c.seat||0,gesture:c.gesture||'',look:c.look||null}));
+    const item={ws:server,name,x:0,z:13,rot:0,ride:'',seat:0,gesture:'',look:null};this.clients.set(id,item);
     server.send(JSON.stringify({type:'welcome',id,count:this.clients.size,players}));
     this.broadcast({type:'pos',id,name,x:0,z:13,rot:0},id);
-    server.addEventListener('message',e=>{try{if(typeof e.data!=='string'||e.data.length>1024)return;const d=JSON.parse(e.data);if(d.type==='pos'){item.x=Math.max(-69,Math.min(69,Number(d.x)||0));item.z=Math.max(-39,Math.min(75,Number(d.z)||0));item.rot=Number(d.rot)||0;item.ride=['viking','carousel'].includes(d.ride)?d.ride:'';item.seat=Math.max(0,Math.min(7,Number(d.seat)||0));item.gesture=['wave','highfive','dance','clap','heart'].includes(d.gesture)?d.gesture:'';this.broadcast({type:'pos',id,name,x:item.x,z:item.z,rot:item.rot,ride:item.ride,seat:item.seat,gesture:item.gesture},id)}else if(d.type==='chat'){this.broadcast({type:'chat',id,name,text:String(d.text||'').slice(0,120)})}}catch(err){}});
+    server.addEventListener('message',e=>{try{if(typeof e.data!=='string'||e.data.length>1024)return;const d=JSON.parse(e.data);if(d.type==='pos'){item.x=Math.max(-69,Math.min(69,Number(d.x)||0));item.z=Math.max(-39,Math.min(75,Number(d.z)||0));item.rot=Number(d.rot)||0;item.ride=['viking','carousel'].includes(d.ride)?d.ride:'';item.seat=Math.max(0,Math.min(7,Number(d.seat)||0));item.look=d.look&&typeof d.look==='object'?{skin:d.look.skin,hair:d.look.hair,outfit:d.look.outfit,pants:d.look.pants,style:String(d.look.style||'').slice(0,12),face:String(d.look.face||'').slice(0,12)}:null;item.gesture=['wave','highfive','dance','clap','heart'].includes(d.gesture)?d.gesture:'';this.broadcast({type:'pos',id,name,x:item.x,z:item.z,rot:item.rot,ride:item.ride,seat:item.seat,gesture:item.gesture,look:item.look},id)}else if(d.type==='chat'){this.broadcast({type:'chat',id,name,text:String(d.text||'').slice(0,120)})}}catch(err){}});
     const bye=()=>{if(this.clients.delete(id))this.broadcast({type:'bye',id})};server.addEventListener('close',bye);server.addEventListener('error',bye);
     return new Response(null,{status:101,webSocket:client});
   }
