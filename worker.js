@@ -1,15 +1,30 @@
 
 export class WorldRoom {
-  constructor(state,env){this.state=state;this.clients=new Map();this.sand=[];this.night=false;}
+  constructor(state,env){this.state=state;this.clients=new Map();}
   async fetch(request){
     if(request.headers.get('Upgrade')!=='websocket')return new Response('WebSocket required',{status:426});
     const u=new URL(request.url);const name=(u.searchParams.get('name')||'Guest').slice(0,22);
     const pair=new WebSocketPair();const client=pair[0],server=pair[1];server.accept();
-    const id=crypto.randomUUID().slice(0,12);const players=[...this.clients].map(([id,c])=>({id,name:c.name,x:c.x,z:c.z,rot:c.rot,ride:c.ride||'',seat:c.seat||0,gesture:c.gesture||'',look:c.look||null,picnic:!!c.picnic}));
-    const item={ws:server,name,x:0,z:13,rot:0,ride:'',seat:0,gesture:'',look:null,picnic:false};this.clients.set(id,item);
-    server.send(JSON.stringify({type:'welcome',id,count:this.clients.size,players,night:this.night,sand:this.sand.filter(n=>Date.now()-n.created<600000)}));
+    const id=crypto.randomUUID().slice(0,12);const players=[...this.clients].map(([id,c])=>({id,name:c.name,x:c.x,z:c.z,rot:c.rot,ride:c.ride||'',seat:c.seat||0,gesture:c.gesture||'',y:c.y||0,roof:!!c.roof,climbing:!!c.climbing,bouncing:!!c.bouncing,look:c.look||null,picnic:!!c.picnic}));
+    const item={ws:server,name,x:0,z:13,rot:0,ride:'',seat:0,gesture:'',y:0,roof:false,climbing:false,bouncing:false,look:null,picnic:false};this.clients.set(id,item);
+    server.send(JSON.stringify({type:'welcome',id,count:this.clients.size,players}));
     this.broadcast({type:'pos',id,name,x:0,z:13,rot:0},id);
-    server.addEventListener('message',e=>{try{if(typeof e.data!=='string'||e.data.length>2048)return;const d=JSON.parse(e.data);if(d.type==='pos'){item.x=Math.max(-69,Math.min(69,Number(d.x)||0));item.z=Math.max(-39,Math.min(75,Number(d.z)||0));item.rot=Number(d.rot)||0;item.ride=['viking','carousel'].includes(d.ride)?d.ride:'';item.seat=Math.max(0,Math.min(7,Number(d.seat)||0));item.look=d.look&&typeof d.look==='object'?{skin:d.look.skin,hair:d.look.hair,outfit:d.look.outfit,pants:d.look.pants,style:String(d.look.style||'').slice(0,12),face:String(d.look.face||'').slice(0,12)}:null;item.picnic=!!d.picnic&&!item.ride;item.gesture=['wave','highfive','dance','clap','heart'].includes(d.gesture)?d.gesture:'';this.broadcast({type:'pos',id,name,x:item.x,z:item.z,rot:item.rot,ride:item.ride,seat:item.seat,gesture:item.gesture,look:item.look,picnic:item.picnic},id)}else if(d.type==='night'){if(typeof d.on==='boolean'){this.night=d.on;this.broadcast({type:'night',on:this.night})}}else if(d.type==='sand'){const note={type:'sand',id:String(d.id||'').slice(0,50),text:String(d.text||'').slice(0,35),x:Math.max(-60,Math.min(60,Number(d.x)||0)),z:Math.max(-38,Math.min(-20,Number(d.z)||-27)),created:Date.now()};if(note.id&&note.text){this.sand=this.sand.filter(n=>Date.now()-n.created<600000).slice(-39);this.sand.push(note);this.broadcast(note)}}else if(d.type==='fireworks'){const x=Math.max(-60,Math.min(60,Number(d.x)||0)),z=Math.max(-30,Math.min(65,Number(d.z)||0)),seed=(Number(d.seed)||0)>>>0;this.broadcast({type:'fireworks',x,z,seed,at:Date.now()+650})}else if(d.type==='chat'){this.broadcast({type:'chat',id,name,text:String(d.text||'').slice(0,120)})}}catch(err){}});
+    server.addEventListener('message',async e=>{try{if(typeof e.data!=='string'||e.data.length>1024)return;const d=JSON.parse(e.data);if(d.type==='pos'){item.x=Math.max(-69,Math.min(69,Number(d.x)||0));item.z=Math.max(-39,Math.min(75,Number(d.z)||0));item.rot=Number(d.rot)||0;item.y=Math.max(-1,Math.min(13,Number(d.y)||0));item.roof=!!d.roof;item.climbing=!!d.climbing;item.bouncing=!!d.bouncing;item.picnic=!!d.picnic;item.look=d.look&&typeof d.look==='object'?d.look:null;item.ride=['viking','carousel','ferris','teacup'].includes(d.ride)?d.ride:'';item.seat=Math.max(0,Math.min(7,Number(d.seat)||0));item.gesture=['wave','highfive','dance','clap','heart'].includes(d.gesture)?d.gesture:'';this.broadcast({type:'pos',id,name,x:item.x,z:item.z,rot:item.rot,y:item.y,ride:item.ride,seat:item.seat,gesture:item.gesture,roof:item.roof,climbing:item.climbing,bouncing:item.bouncing,picnic:item.picnic,look:item.look},id)}else if(d.type==='action'){
+ if(['bounce','climb','descend','wish'].includes(d.action))
+ this.broadcast({type:'action',id,name,action:d.action,x:Math.max(-69,Math.min(69,Number(d.x)||0)),y:Math.max(-1,Math.min(13,Number(d.y)||0)),z:Math.max(-39,Math.min(75,Number(d.z)||0))},id);
+ }else if(d.type==='secretSave'){
+ const code=String(d.code||'').toUpperCase(),body=String(d.body||''),password=String(d.password||'');
+ if(!/^[A-Z0-9_-]{3,20}$/.test(code)||!body||body.length>600||password.length<4||password.length>60){server.send(JSON.stringify({type:'secretResult',ok:false,error:'Invalid letter'}));return}
+ const key='letter:'+code,existing=await this.state.storage.get(key);
+ if(existing){server.send(JSON.stringify({type:'secretResult',ok:false,error:'Letter code already exists'}));return}
+ const salt=crypto.randomUUID(),hash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(salt+password))),b=>b.toString(16).padStart(2,'0')).join('');
+ await this.state.storage.put(key,{body,salt,hash});server.send(JSON.stringify({type:'secretResult',ok:true}));
+ }else if(d.type==='secretRead'){
+ const code=String(d.code||'').toUpperCase(),password=String(d.password||''),letter=await this.state.storage.get('letter:'+code);
+ if(!letter){server.send(JSON.stringify({type:'secretResult',ok:false,error:'Letter not found'}));return}
+ const hash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(letter.salt+password))),b=>b.toString(16).padStart(2,'0')).join('');
+ server.send(JSON.stringify(hash===letter.hash?{type:'secretResult',ok:true,body:letter.body}:{type:'secretResult',ok:false,error:'Incorrect password'}));
+ }else if(d.type==='chat'){this.broadcast({type:'chat',id,name,text:String(d.text||'').slice(0,120)})}}catch(err){}});
     const bye=()=>{if(this.clients.delete(id))this.broadcast({type:'bye',id})};server.addEventListener('close',bye);server.addEventListener('error',bye);
     return new Response(null,{status:101,webSocket:client});
   }
