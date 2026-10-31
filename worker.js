@@ -5,55 +5,28 @@ export class WorldRoom {
     this.clients = new Map();
 
     this.sweep = setInterval(() => {
-      this.cleanGhosts();
-    }, 5000);
-  }
+      const now = Date.now();
 
-  cleanGhosts() {
-    const now = Date.now();
+      for (const [id, c] of this.clients) {
+        if (now - c.lastSeen > 35000) {
+          try {
+            c.ws.close(4000, "Connection timed out");
+          } catch (e) {}
 
-    for (const [id, c] of this.clients) {
-      if (now - c.lastSeen > 15000) {
-        this.removeClient(id, 4000, "Timed out");
-      } else {
-        try {
-          c.ws.send(JSON.stringify({ type: "heartbeat" }));
-        } catch (e) {
-          this.removeClient(id, 4000, "Disconnected");
+          this.clients.delete(id);
+          this.broadcast({ type: "bye", id });
+        } else {
+          try {
+            c.ws.send(JSON.stringify({
+              type: "heartbeat"
+            }));
+          } catch (e) {
+            this.clients.delete(id);
+            this.broadcast({ type: "bye", id });
+          }
         }
       }
-    }
-  }
-
-  removeClient(id, code = 1000, reason = "Disconnected") {
-    const c = this.clients.get(id);
-    if (!c) return;
-
-    this.clients.delete(id);
-
-    try {
-      c.ws.close(code, reason);
-    } catch (e) {}
-
-    this.broadcast({ type: "bye", id });
-    this.broadcast({
-      type: "count",
-      count: this.clients.size
-    });
-  }
-
-  broadcast(msg, except = null) {
-    const payload = JSON.stringify(msg);
-
-    for (const [id, c] of this.clients) {
-      if (id === except) continue;
-
-      try {
-        c.ws.send(payload);
-      } catch (e) {
-        this.removeClient(id);
-      }
-    }
+    }, 10000);
   }
 
   async fetch(request) {
@@ -63,29 +36,10 @@ export class WorldRoom {
       });
     }
 
-    this.cleanGhosts();
-
-    const url = new URL(request.url);
+    const u = new URL(request.url);
     const name = (
-      url.searchParams.get("name") || "Guest"
+      u.searchParams.get("name") || "Guest"
     ).slice(0, 22);
-
-    const session = (
-      url.searchParams.get("session") || ""
-    ).slice(0, 80);
-
-    // Same browser session: remove the previous connection.
-    if (session) {
-      for (const [oldId, old] of [...this.clients]) {
-        if (old.session === session) {
-          this.removeClient(
-            oldId,
-            4001,
-            "Replaced by new connection"
-          );
-        }
-      }
-    }
 
     const pair = new WebSocketPair();
     const client = pair[0];
@@ -93,41 +47,84 @@ export class WorldRoom {
 
     server.accept();
 
+    const session = (
+      u.searchParams.get("session") || ""
+    ).slice(0, 80);
+
+    // Replace duplicate connections from the same browser.
+    if (session) {
+      for (const [oldId, old] of this.clients) {
+        if (old.session === session) {
+          this.clients.delete(oldId);
+          this.broadcast({
+            type: "bye",
+            id: oldId
+          });
+
+          try {
+            old.ws.close(
+              4001,
+              "Replaced by newer session"
+            );
+          } catch (e) {}
+        }
+      }
+    }
+
     const id = crypto.randomUUID().slice(0, 12);
 
-    const players = [...this.clients].map(([pid, c]) => ({
-      id: pid,
-      name: c.name,
-      x: c.x,
-      y: c.y,
-      z: c.z,
-      rot: c.rot,
-      ride: c.ride,
-      seat: c.seat,
-      gesture: c.gesture,
-      roof: c.roof,
-      climbing: c.climbing,
-      bouncing: c.bouncing,
-      look: c.look,
-      picnic: c.picnic,
-      swim: c.swim,
-      swimMoving: c.swimMoving,
-      boat: c.boat,
-      boatSeat: c.boatSeat,
-      fishing: c.fishing
-    }));
+    for (const [oldId, old] of this.clients) {
+      if (Date.now() - old.lastSeen > 35000) {
+        this.clients.delete(oldId);
+        this.broadcast({
+          type: "bye",
+          id: oldId
+        });
+
+        try {
+          old.ws.close(4000, "Timed out");
+        } catch (e) {}
+      }
+    }
+
+    const players = [...this.clients]
+      .filter(([_, c]) =>
+        Date.now() - c.lastSeen <= 35000
+      )
+      .map(([id, c]) => ({
+        id,
+        name: c.name,
+        x: c.x,
+        z: c.z,
+        rot: c.rot,
+        ride: c.ride || "",
+        seat: c.seat || 0,
+        gesture: c.gesture || "",
+        y: c.y || 0,
+        roof: !!c.roof,
+        climbing: !!c.climbing,
+        bouncing: !!c.bouncing,
+        look: c.look || null,
+        picnic: !!c.picnic,
+        swim: c.swim || "",
+        swimMoving: !!c.swimMoving,
+        boat: c.boat ?? -1,
+        boatSeat: c.boatSeat ?? -1,
+        fishing: !!c.fishing,
+        treat: c.treat || "",
+        treatUntil: c.treatUntil || 0
+      }));
 
     const item = {
       ws: server,
-      session,
       name,
       x: 0,
-      y: 0,
       z: 13,
       rot: 0,
       ride: "",
       seat: 0,
       gesture: "",
+      y: 0,
       roof: false,
       climbing: false,
       bouncing: false,
@@ -138,7 +135,8 @@ export class WorldRoom {
       boat: -1,
       boatSeat: -1,
       fishing: false,
-      lastSeen: Date.now()
+      lastSeen: Date.now(),
+      session
     };
 
     this.clients.set(id, item);
@@ -155,56 +153,38 @@ export class WorldRoom {
       id,
       name,
       x: 0,
-      y: 0,
       z: 13,
       rot: 0
     }, id);
 
-    this.broadcast({
-      type: "count",
-      count: this.clients.size
-    });
-
-    server.addEventListener("message", async event => {
+    server.addEventListener("message", async e => {
       try {
         if (
-          typeof event.data !== "string" ||
-          event.data.length > 4096
+          typeof e.data !== "string" ||
+          e.data.length > 1024
         ) return;
 
-        if (this.clients.get(id) !== item) return;
-
-        const d = JSON.parse(event.data);
+        const d = JSON.parse(e.data);
         item.lastSeen = Date.now();
 
-        if (
-          d.type === "heartbeatAck" ||
-          d.type === "pong"
-        ) {
-          return;
-        }
+        if (d.type === "heartbeatAck") return;
 
         if (d.type === "pos") {
           item.x = Math.max(
             -69, Math.min(69, Number(d.x) || 0)
           );
           item.z = Math.max(
-            -120, Math.min(75, Number(d.z) || 0)
-          );
-          item.y = Math.max(
-            -3, Math.min(20, Number(d.y) || 0)
+            -89, Math.min(75, Number(d.z) || 0)
           );
           item.rot = Number(d.rot) || 0;
+          item.y = Math.max(
+            -1, Math.min(13, Number(d.y) || 0)
+          );
 
           item.roof = !!d.roof;
           item.climbing = !!d.climbing;
           item.bouncing = !!d.bouncing;
           item.picnic = !!d.picnic;
-
-          item.look =
-            d.look && typeof d.look === "object"
-              ? d.look
-              : null;
 
           item.swim = [
             "freestyle",
@@ -220,12 +200,17 @@ export class WorldRoom {
               ? d.boat
               : -1;
 
-          item.boatSeat =
-            item.boat < 0
-              ? -1
-              : d.boatSeat === 1 ? 1 : 0;
+          item.boatSeat = item.boat < 0
+            ? -1
+            : d.boatSeat === 1 ? 1 : 0;
 
           item.fishing = !!d.fishing;
+
+          item.look =
+            d.look &&
+            typeof d.look === "object"
+              ? d.look
+              : null;
 
           item.ride = [
             "viking",
@@ -251,9 +236,12 @@ export class WorldRoom {
             id,
             name,
             x: item.x,
-            y: item.y,
             z: item.z,
             rot: item.rot,
+            y: item.y,
+            ride: item.ride,
+            seat: item.seat,
+            gesture: item.gesture,
             roof: item.roof,
             climbing: item.climbing,
             bouncing: item.bouncing,
@@ -263,13 +251,20 @@ export class WorldRoom {
             swimMoving: item.swimMoving,
             boat: item.boat,
             boatSeat: item.boatSeat,
-            fishing: item.fishing,
-            ride: item.ride,
-            seat: item.seat,
-            gesture: item.gesture
+            fishing: item.fishing
           }, id);
 
         } else if (d.type === "action") {
+
+          // Sync purchased ice cream and drinks.
+          if (
+            d.action === "treat" &&
+            typeof d.treat === "string"
+          ) {
+            item.treat = d.treat.slice(0, 40);
+            item.treatUntil = Date.now() + 28000;
+          }
+
           if ([
             "bounce",
             "climb",
@@ -278,18 +273,30 @@ export class WorldRoom {
             "fishStart",
             "fishStop",
             "boatBoard",
-            "boatLeave"
+            "boatLeave",
+            "treat"
           ].includes(d.action)) {
             this.broadcast({
               type: "action",
               id,
               name,
               action: d.action,
-              x: Number(d.x) || 0,
-              y: Number(d.y) || 0,
-              z: Number(d.z) || 0,
+              x: Math.max(
+                -69, Math.min(69, Number(d.x) || 0)
+              ),
+              y: Math.max(
+                -1, Math.min(13, Number(d.y) || 0)
+              ),
+              z: Math.max(
+                -89, Math.min(75, Number(d.z) || 0)
+              ),
               boat: d.boat,
-              seat: d.seat
+              seat: d.seat,
+              treat:
+                d.action === "treat" &&
+                typeof d.treat === "string"
+                  ? d.treat.slice(0, 40)
+                  : undefined
             }, id);
           }
 
@@ -318,16 +325,11 @@ export class WorldRoom {
             }, id);
           }
 
-        } else if (d.type === "chat") {
-          this.broadcast({
-            type: "chat",
-            id,
-            name,
-            text: String(d.text || "").slice(0, 120)
-          });
-
         } else if (d.type === "secretSave") {
-          const code = String(d.code || "").toUpperCase();
+          const code = String(
+            d.code || ""
+          ).toUpperCase();
+
           const body = String(d.body || "");
           const password = String(d.password || "");
 
@@ -347,7 +349,8 @@ export class WorldRoom {
           }
 
           const key = "letter:" + code;
-          const existing = await this.state.storage.get(key);
+          const existing =
+            await this.state.storage.get(key);
 
           if (existing) {
             server.send(JSON.stringify({
@@ -364,7 +367,9 @@ export class WorldRoom {
             new Uint8Array(
               await crypto.subtle.digest(
                 "SHA-256",
-                new TextEncoder().encode(salt + password)
+                new TextEncoder().encode(
+                  salt + password
+                )
               )
             ),
             b => b.toString(16).padStart(2, "0")
@@ -382,7 +387,10 @@ export class WorldRoom {
           }));
 
         } else if (d.type === "secretRead") {
-          const code = String(d.code || "").toUpperCase();
+          const code = String(
+            d.code || ""
+          ).toUpperCase();
+
           const password = String(d.password || "");
 
           const letter = await this.state.storage.get(
@@ -402,7 +410,9 @@ export class WorldRoom {
             new Uint8Array(
               await crypto.subtle.digest(
                 "SHA-256",
-                new TextEncoder().encode(letter.salt + password)
+                new TextEncoder().encode(
+                  letter.salt + password
+                )
               )
             ),
             b => b.toString(16).padStart(2, "0")
@@ -421,26 +431,49 @@ export class WorldRoom {
                   error: "Incorrect password"
                 }
           ));
+
+        } else if (d.type === "chat") {
+          this.broadcast({
+            type: "chat",
+            id,
+            name,
+            text: String(d.text || "").slice(0, 120)
+          });
         }
 
-      } catch (err) {
-        console.error("World message error:", err);
-      }
+      } catch (err) {}
     });
 
-    const disconnect = () => {
-      if (this.clients.get(id) === item) {
-        this.removeClient(id);
+    const bye = () => {
+      if (this.clients.delete(id)) {
+        this.broadcast({
+          type: "bye",
+          id
+        });
       }
     };
 
-    server.addEventListener("close", disconnect);
-    server.addEventListener("error", disconnect);
+    server.addEventListener("close", bye);
+    server.addEventListener("error", bye);
 
     return new Response(null, {
       status: 101,
       webSocket: client
     });
+  }
+
+  broadcast(msg, except) {
+    const payload = JSON.stringify(msg);
+
+    for (const [id, c] of this.clients) {
+      if (id !== except) {
+        try {
+          c.ws.send(payload);
+        } catch (e) {
+          this.clients.delete(id);
+        }
+      }
+    }
   }
 }
 
